@@ -6,8 +6,8 @@ const nextConfig: NextConfig = {
       allowedOrigins: [
         "localhost:3000", 
         "*.whop.com", 
-        "*.vercel.app", // Allow all Vercel subdomains
-        "192.168.0.152"
+        "*.vercel.app",
+        "whop.com"
       ],
     },
   },
@@ -18,6 +18,32 @@ const nextConfig: NextConfig = {
         hostname: "**",
       },
     ],
+  },
+  async headers() {
+    return [
+      {
+        source: "/:path*",
+        headers: [
+          {
+            key: "Access-Control-Allow-Origin",
+            value: "*", // Allow all origins for now to fix the handshake
+          },
+          {
+            key: "Access-Control-Allow-Methods",
+            value: "GET, POST, PUT, DELETE, OPTIONS",
+          },
+          {
+            key: "Access-Control-Allow-Headers",
+            value: "X-Requested-With, Content-Type, Authorization",
+          },
+          {
+            // Critical for iframes: Allows the app to be embedded
+            key: "Content-Security-Policy",
+            value: "frame-ancestors https://*.whop.com https://whop.com;",
+          }
+        ],
+      },
+    ];
   },
 };
 
