@@ -31,7 +31,12 @@ export type ScrapeResult = {
   }[];
 };
 
-export async function performBackgroundCheck(prevState: any, formData: FormData) {
+export type ActionState = {
+  error: string | null;
+  data: ScrapeResult | null;
+};
+
+export async function performBackgroundCheck(prevState: ActionState, formData: FormData): Promise<ActionState> {
   const query = formData.get('query') as string;
 
   if (!query) {

@@ -1,7 +1,7 @@
 'use client'
 
 import { useActionState } from 'react';
-import { performBackgroundCheck, type ScrapeResult } from '../actions';
+import { performBackgroundCheck, type ScrapeResult, type ActionState } from '../actions';
 import { 
   Loader2, 
   CheckCircle, 
@@ -20,9 +20,9 @@ import {
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
-const initialState = {
+const initialState: ActionState = {
   error: null,
-  data: null as ScrapeResult | null,
+  data: null,
 };
 
 export function BackgroundCheckForm() {
