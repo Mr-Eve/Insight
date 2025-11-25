@@ -1,5 +1,7 @@
 'use server'
 
+import { whopsdk } from "@/lib/whop-sdk";
+
 export type ScrapeResult = {
   id: string;
   query: string;
@@ -97,8 +99,6 @@ async function scrapeProfile(username: string) {
 
     if (!response.ok) {
       console.error(`Scrape API Failed: ${response.status} ${response.statusText}`);
-      const text = await response.text();
-      console.error('Error details:', text);
       return null;
     }
 
@@ -111,19 +111,69 @@ async function scrapeProfile(username: string) {
 
 export async function performBackgroundCheck(prevState: ActionState, formData: FormData): Promise<ActionState> {
   const query = formData.get('query') as string;
+  const companyId = formData.get('companyId') as string;
 
   if (!query) {
-    return { error: 'Please enter an Email, Username, or Phone number', data: null };
+    return { error: 'Please enter a Whop ID, Username, or Email', data: null };
   }
 
-  // 1. Check HIBP (API Check)
-  let breaches = await checkHaveIBeenPwned(query);
+  let targetEmail = query;
+  let targetUsername = query;
+  let whopIdentity = null;
+
+  // 1. Try to lookup Whop User if companyId is present
+  if (companyId) {
+    try {
+      console.log(`Looking up Whop user: ${query} in company ${companyId}`);
+      
+      // Check if query is a user ID
+      const isUserId = query.startsWith('user_');
+      
+      // List members matching query
+      const members = await whopsdk.members.list({
+        company_id: companyId,
+        query: isUserId ? undefined : query,
+        user_ids: isUserId ? [query] : undefined,
+        first: 1
+      });
+
+      if (members.data && members.data.length > 0) {
+        const member = members.data[0];
+        if (member.user) {
+          whopIdentity = {
+            fullName: member.user.name,
+            username: member.user.username,
+            email: member.user.email,
+            id: member.user.id,
+            joinedAt: member.joined_at
+          };
+          
+          // Update targets for further checks
+          if (member.user.email) targetEmail = member.user.email;
+          if (member.user.username) targetUsername = member.user.username;
+          
+          console.log('Found Whop User:', whopIdentity);
+        }
+      }
+    } catch (err) {
+      console.error('Whop API Lookup Failed:', err);
+      // Continue with original query if lookup fails
+    }
+  }
+
+  // 2. Check HIBP (API Check) using Email
+  // Only run if we have an email-like string
+  let breaches = null;
+  if (targetEmail.includes('@')) {
+    breaches = await checkHaveIBeenPwned(targetEmail);
+  }
+  
   const usedRealApi = breaches !== null;
 
-  // 2. Try to scrape GitHub profile (Scrapy/Python Check)
-  // Assuming the query is a username for this demo. If it's an email, we might strip the domain.
-  const username = query.includes('@') ? query.split('@')[0] : query;
-  const scrapedData = await scrapeProfile(username);
+  // 3. Try to scrape GitHub profile (Scrapy/Python Check) using Username
+  // Ensure username doesn't have @ (e.g. if we failed to find Whop user and query was email)
+  const cleanUsername = targetUsername.includes('@') ? targetUsername.split('@')[0] : targetUsername;
+  const scrapedData = await scrapeProfile(cleanUsername);
 
   // Mock data fallback logic
   const isRiskyMock = query.length % 2 !== 0; 
@@ -150,20 +200,19 @@ export async function performBackgroundCheck(prevState: ActionState, formData: F
   } else {
     flags.push({ severity: 'low', type: 'Info', description: 'Clean breach history.' });
   }
+  
+  if (whopIdentity) {
+    flags.push({ severity: 'low', type: 'Whop Verified', description: `Confirmed member of your company (Joined: ${new Date(whopIdentity.joinedAt).toLocaleDateString()}).` });
+  }
 
-  // Use scraped data if available, otherwise fallback to mock identity
-  const identity = scrapedData ? {
-    fullName: scrapedData.fullName || username,
+  // Consolidate Identity Data
+  // Priority: Scraped Data -> Whop Data -> Fallback/Mock
+  const identity = {
+    fullName: scrapedData?.fullName || whopIdentity?.fullName || 'Alex J. Doe',
     ageRange: 'Unknown',
-    location: scrapedData.location || 'Unknown',
-    jobTitle: scrapedData.company || 'Unknown',
-    avatar: scrapedData.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${query}`,
-  } : {
-    fullName: 'Alex J. Doe',
-    ageRange: '25-34',
-    location: 'San Francisco, CA',
-    jobTitle: 'Software Engineer',
-    avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${query}`,
+    location: scrapedData?.location || 'Unknown',
+    jobTitle: scrapedData?.company || 'Unknown',
+    avatar: scrapedData?.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${cleanUsername}`,
   };
 
   const mockResult: ScrapeResult = {
@@ -175,13 +224,18 @@ export async function performBackgroundCheck(prevState: ActionState, formData: F
     identity,
     social: [
       { 
+        platform: 'Whop', 
+        username: whopIdentity?.username || 'Not Found', 
+        url: whopIdentity ? `https://whop.com/${whopIdentity.username}` : '#', 
+        exists: !!whopIdentity 
+      },
+      { 
         platform: 'GitHub', 
-        username: username, 
-        url: `https://github.com/${username}`, 
+        username: cleanUsername, 
+        url: `https://github.com/${cleanUsername}`, 
         exists: !!scrapedData 
       },
       { platform: 'Twitter', username: 'Check manually', url: '#', exists: false },
-      { platform: 'LinkedIn', username: 'Check manually', url: '#', exists: false },
     ],
     breaches: breaches as any,
     flags: flags as any,

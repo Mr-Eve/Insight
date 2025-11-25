@@ -25,12 +25,13 @@ const initialState: ActionState = {
   data: null,
 };
 
-export function BackgroundCheckForm() {
+export function BackgroundCheckForm({ companyId }: { companyId: string }) {
   const [state, formAction, isPending] = useActionState(performBackgroundCheck, initialState);
 
   return (
     <div className="w-full space-y-8">
       <form action={formAction} className="w-full max-w-3xl mx-auto">
+        <input type="hidden" name="companyId" value={companyId} />
         <div className="flex gap-3">
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 h-5 w-5" />

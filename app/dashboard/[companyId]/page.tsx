@@ -28,7 +28,7 @@ export default async function DashboardPage({ params }: PageProps) {
             <p className="text-zinc-500 dark:text-zinc-400">Enter a user ID to perform a comprehensive background check and data scrape.</p>
           </div>
           
-          <BackgroundCheckForm />
+          <BackgroundCheckForm companyId={companyId} />
         </div>
       </div>
     </div>
