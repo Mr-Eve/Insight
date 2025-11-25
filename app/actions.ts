@@ -36,6 +36,7 @@ export type ScrapeResult = {
 export type ActionState = {
   error: string | null;
   data: ScrapeResult | null;
+  query?: string;
 };
 
 async function checkHaveIBeenPwned(account: string) {
@@ -115,7 +116,7 @@ export async function performBackgroundCheck(prevState: ActionState, formData: F
   const platform = formData.get('platform') as string; // 'auto', 'whop', 'github', 'email'
 
   if (!query) {
-    return { error: 'Please enter a Whop ID, Username, or Email', data: null };
+    return { error: 'Please enter a Whop ID, Username, or Email', data: null, query: query || undefined };
   }
 
   let targetEmail = '';
@@ -196,18 +197,14 @@ export async function performBackgroundCheck(prevState: ActionState, formData: F
      scrapedData = await scrapeProfile(cleanUsername);
   }
 
-  // Mock data fallback logic (Only if we found NOTHING at all)
   const foundAnyRealData = whopIdentity || scrapedData || usedRealApi;
-  const isRiskyMock = query.length % 2 !== 0; 
   
-  if (!foundAnyRealData && breaches === null) {
-    // Only use mock breaches if we literally found nothing real
-    breaches = isRiskyMock ? [
-      { name: 'Collection #1', date: '2019-01-07', description: 'Email and password exposed in massive data dump.' },
-      { name: 'Verifications.io', date: '2019-02-25', description: 'Personal info exposed in marketing database.' },
-    ] : [];
-  } else if (breaches === null) {
-    // If we found real identity data but HIBP failed/was skipped, assume 0 breaches for the report
+  if (!foundAnyRealData) {
+    return { error: `No results found for "${query}"`, data: null, query };
+  }
+
+  // If we found real identity data but HIBP failed/was skipped, assume 0 breaches for the report
+  if (breaches === null) {
     breaches = [];
   }
 
@@ -216,11 +213,6 @@ export async function performBackgroundCheck(prevState: ActionState, formData: F
   // If verified Whop user, -20 risk.
   let riskScore = Math.min(10 + (breaches.length * 15), 99);
   if (whopIdentity) riskScore = Math.max(0, riskScore - 20);
-  
-  if (!foundAnyRealData && !usedRealApi) {
-      // Fallback mock score
-      riskScore = isRiskyMock ? 85 : 12;
-  }
 
   const flags = [];
   if (breaches.length > 0) {
@@ -240,11 +232,11 @@ export async function performBackgroundCheck(prevState: ActionState, formData: F
   // Consolidate Identity Data
   // Priority: Scraped Data -> Whop Data -> Fallback/Mock
   const identity = {
-    fullName: scrapedData?.fullName || whopIdentity?.fullName || (foundAnyRealData ? cleanUsername : 'Alex J. Doe'),
+    fullName: scrapedData?.fullName || whopIdentity?.fullName || cleanUsername || query,
     ageRange: 'Unknown',
     location: scrapedData?.location || 'Unknown',
     jobTitle: scrapedData?.company || 'Unknown',
-    avatar: scrapedData?.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${cleanUsername}`,
+    avatar: scrapedData?.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${cleanUsername || query}`,
   };
 
   const mockResult: ScrapeResult = {
@@ -263,8 +255,8 @@ export async function performBackgroundCheck(prevState: ActionState, formData: F
       },
       { 
         platform: 'GitHub', 
-        username: cleanUsername, 
-        url: `https://github.com/${cleanUsername}`, 
+        username: cleanUsername || 'Unknown', 
+        url: cleanUsername ? `https://github.com/${cleanUsername}` : '#', 
         exists: !!scrapedData 
       },
       { platform: 'Twitter', username: 'Check manually', url: '#', exists: false },
@@ -273,5 +265,5 @@ export async function performBackgroundCheck(prevState: ActionState, formData: F
     flags: flags as any,
   };
 
-  return { error: null, data: mockResult };
+  return { error: null, data: mockResult, query };
 }

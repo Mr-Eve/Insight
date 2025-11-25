@@ -39,6 +39,7 @@ export function BackgroundCheckForm({ companyId }: { companyId: string }) {
             <input
               name="query"
               type="text"
+              defaultValue={state.query}
               placeholder="Enter ID, Username, or Email"
               required
               className="w-full pl-10 pr-4 py-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm text-lg"
