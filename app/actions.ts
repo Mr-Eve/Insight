@@ -75,20 +75,36 @@ async function checkHaveIBeenPwned(account: string) {
 
 async function scrapeProfile(username: string) {
   try {
-    // Call our own Python serverless function
-    // We need the absolute URL because this runs on the server
-    const baseUrl = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000';
+    // Determine the base URL reliably
+    let baseUrl = 'http://localhost:3000';
+    
+    if (process.env.VERCEL_URL) {
+      baseUrl = `https://${process.env.VERCEL_URL}`;
+    } else if (process.env.NEXT_PUBLIC_VERCEL_URL) {
+      baseUrl = `https://${process.env.NEXT_PUBLIC_VERCEL_URL}`;
+    }
+
+    console.log(`Attempting to scrape: ${baseUrl}/api/scrape?username=${username}`);
+
     const response = await fetch(`${baseUrl}/api/scrape?username=${encodeURIComponent(username)}`, {
-      next: { revalidate: 0 } // Don't cache
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      next: { revalidate: 0 }, // Don't cache
+      cache: 'no-store'
     });
 
     if (!response.ok) {
+      console.error(`Scrape API Failed: ${response.status} ${response.statusText}`);
+      const text = await response.text();
+      console.error('Error details:', text);
       return null;
     }
 
     return await response.json();
   } catch (error) {
-    console.error('Scrape Error:', error);
+    console.error('Scrape Exception:', error);
     return null;
   }
 }
