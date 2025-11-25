@@ -121,7 +121,7 @@ export async function performBackgroundCheck(prevState: ActionState, formData: F
 
   let targetEmail = '';
   let targetUsername = '';
-  let whopIdentity = null;
+  let whopIdentity: any = null;
   let whopError = null;
 
   // === Strategy Selection based on Platform ===
@@ -151,7 +151,8 @@ export async function performBackgroundCheck(prevState: ActionState, formData: F
               username: member.user.username,
               email: member.user.email,
               id: member.user.id,
-              joinedAt: member.joined_at
+              joinedAt: member.joined_at,
+              avatar: member.user.profile_pic_url || null
             };
             
             // Propagate found data to other checks
@@ -195,18 +196,13 @@ export async function performBackgroundCheck(prevState: ActionState, formData: F
   // 3. Try to scrape GitHub profile (Scrapy/Python Check) using Username
   // Only scrape if we have a valid username and the platform allows it (not 'email' mode)
   const cleanUsername = targetUsername.includes('@') ? targetUsername.split('@')[0] : targetUsername;
-  let scrapedData = null;
+  let scrapedData: any = null;
   
   if (cleanUsername && platform !== 'email') {
      scrapedData = await scrapeProfile(cleanUsername);
   }
 
   // Validation: Did we actually find anything?
-  // We consider it a "hit" if:
-  // 1. Whop found a user
-  // 2. HIBP returned a valid response (even empty list is a valid 'clean' response)
-  // 3. Scraper found connected accounts OR a Full Name (not just an empty shell)
-  
   const validScrape = scrapedData && (
       (scrapedData.connected_accounts && scrapedData.connected_accounts.length > 0) || 
       (scrapedData.fullName && scrapedData.fullName.length > 0)
@@ -250,13 +246,21 @@ export async function performBackgroundCheck(prevState: ActionState, formData: F
   }
 
   // Consolidate Identity Data
-  // Priority: Scraped Data -> Whop Data -> Fallback (only if foundAnyRealData is true)
+  // Priority: Scraped Data -> Whop Data -> Unavatar Fallback -> Dicebear
+  
+  // Try to find a Twitter username to use for unavatar fallback
+  const twitterAccount = scrapedData?.connected_accounts?.find((a: any) => a.platform === 'Twitter');
+  const twitterUsername = twitterAccount?.username;
+
   const identity = {
     fullName: scrapedData?.fullName || whopIdentity?.fullName || cleanUsername || query,
     ageRange: 'Unknown',
     location: scrapedData?.location || 'Unknown',
     jobTitle: scrapedData?.company || 'Unknown',
-    avatar: scrapedData?.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${cleanUsername || query}`,
+    avatar: scrapedData?.avatar || 
+            whopIdentity?.avatar || 
+            (twitterUsername ? `https://unavatar.io/twitter/${twitterUsername}` : null) ||
+            `https://api.dicebear.com/7.x/avataaars/svg?seed=${cleanUsername || query}`,
   };
 
   const mockResult: ScrapeResult = {
