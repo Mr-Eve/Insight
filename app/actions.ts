@@ -246,21 +246,32 @@ export async function performBackgroundCheck(prevState: ActionState, formData: F
   }
 
   // Consolidate Identity Data
-  // Priority: Scraped Data -> Whop Data -> Unavatar Fallback -> Dicebear
-  
-  // Try to find a Twitter username to use for unavatar fallback
+  // Smart Avatar Selection
   const twitterAccount = scrapedData?.connected_accounts?.find((a: any) => a.platform === 'Twitter');
-  const twitterUsername = twitterAccount?.username;
+  const githubAccount = scrapedData?.connected_accounts?.find((a: any) => a.platform === 'GitHub');
+  
+  let bestAvatar = null;
+  
+  if (whopIdentity?.avatar) {
+      // Whop is source of truth
+      bestAvatar = whopIdentity.avatar;
+  } else if (githubAccount && scrapedData?.avatar && !scrapedData.avatar.includes('twimg')) {
+      // GitHub avatars are usually reliable and high quality
+      bestAvatar = scrapedData.avatar;
+  } else if (twitterAccount?.username) {
+      // For Twitter, prefer unavatar.io as direct scraping often yields expired/protected URLs
+      bestAvatar = `https://unavatar.io/twitter/${twitterAccount.username}`;
+  } else {
+      // Fallback to whatever we scraped (Instagram, etc.)
+      bestAvatar = scrapedData?.avatar;
+  }
 
   const identity = {
     fullName: scrapedData?.fullName || whopIdentity?.fullName || cleanUsername || query,
     ageRange: 'Unknown',
     location: scrapedData?.location || 'Unknown',
     jobTitle: scrapedData?.company || 'Unknown',
-    avatar: scrapedData?.avatar || 
-            whopIdentity?.avatar || 
-            (twitterUsername ? `https://unavatar.io/twitter/${twitterUsername}` : null) ||
-            `https://api.dicebear.com/7.x/avataaars/svg?seed=${cleanUsername || query}`,
+    avatar: bestAvatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${cleanUsername || query}`,
   };
 
   const mockResult: ScrapeResult = {
