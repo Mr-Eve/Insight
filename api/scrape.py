@@ -4,6 +4,7 @@ import asyncio
 import httpx
 from parsel import Selector
 from urllib.parse import parse_qs, urlparse, urljoin
+import re
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -81,26 +82,26 @@ class handler(BaseHTTPRequestHandler):
 
                     # 2. Find Linked Accounts on GitHub
                     # Strategy: Scrape ALL links in the profile container (.h-card)
-                    # This covers bio, sidebar, pinned items, etc.
-                    # Exclude internal GitHub links (repositories, stars, followers)
-                    
                     profile_links = sel.css('.h-card a::attr(href)').getall()
-                    # Fallback if .h-card isn't found (older layout)
                     if not profile_links:
                         profile_links = sel.css('.js-profile-editable-area a::attr(href)').getall()
                     
                     website_url = None
                     
                     for link in profile_links:
-                        # Normalize
                         if not link.startswith('http'): continue
                         
-                        # Skip internal GitHub links unless they are explicitly external (redirects)
+                        # Blacklist
+                        if 'avatars.githubusercontent.com' in link: continue
+                        if 'github.com/users/' in link: continue # Hovercards
+                        if '/followers' in link or '/following' in link: continue
+                        if '/repositories' in link or '/stars' in link: continue
+                        if 'assets' in link: continue
+
+                        # Normalize GitHub links
                         if 'github.com' in link and username not in link: 
-                             # Keep going, might be a link to another repo, usually not a social profile
                              pass
                         
-                        # Identify platform
                         platform = self.detect_platform(link)
                         if platform:
                             results["connected_accounts"].append({
@@ -110,10 +111,24 @@ class handler(BaseHTTPRequestHandler):
                                 "exists": True
                             })
                         elif 'github.com' not in link and not link.startswith('mailto:'):
-                            # Likely a personal website
-                            # Avoid some common false positives
                             if 'opensource.org' not in link and 'shields.io' not in link:
                                 website_url = link
+
+                    # 2b. Look for handles in BIO (Text Analysis)
+                    # Matches @username or platform.com/username patterns in text
+                    bio_text = results["bio"]
+                    if bio_text:
+                         # Twitter/X handle regex: @username or x.com/username
+                         # This is a heuristic
+                         twitter_match = re.search(r'(?:twitter\.com|x\.com)/([a-zA-Z0-9_]+)', bio_text)
+                         if twitter_match:
+                             handle = twitter_match.group(1)
+                             results["connected_accounts"].append({
+                                 "platform": "Twitter",
+                                 "url": f"https://twitter.com/{handle}",
+                                 "username": handle,
+                                 "exists": True
+                             })
 
                     if website_url:
                         results["website"] = website_url
@@ -134,7 +149,6 @@ class handler(BaseHTTPRequestHandler):
         seen = set()
         unique_accounts = []
         for acc in results["connected_accounts"]:
-            # Key by platform and normalized URL
             k = (acc.get('platform'), acc.get('url').rstrip('/'))
             if k not in seen:
                 seen.add(k)
@@ -161,18 +175,23 @@ class handler(BaseHTTPRequestHandler):
         return None
 
     def extract_username(self, url):
-        # Simple heuristic
         path = urlparse(url).path
         return path.strip('/').split('/')[-1]
 
     async def scrape_website_socials(self, client, url, results):
         try:
-            resp = await client.get(url, timeout=10.0)
+            # Add a stricter timeout for external sites
+            resp = await client.get(url, timeout=8.0)
             if resp.status_code == 200:
                 sel = Selector(text=resp.text)
                 links = sel.css('a::attr(href)').getall()
                 for link in links:
+                    if not link: continue
                     full_link = urljoin(url, link)
+                    
+                    # Filter assets
+                    if any(x in full_link.lower() for x in ['.jpg', '.png', '.svg', '.css', '.js']): continue
+
                     platform = self.detect_platform(full_link)
                     if platform:
                         results["connected_accounts"].append({
