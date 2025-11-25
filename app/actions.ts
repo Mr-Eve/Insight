@@ -253,13 +253,19 @@ export async function performBackgroundCheck(prevState: ActionState, formData: F
         url: whopIdentity ? `https://whop.com/${whopIdentity.username}` : '#', 
         exists: !!whopIdentity 
       },
-      { 
-        platform: 'GitHub', 
-        username: cleanUsername || 'Unknown', 
-        url: cleanUsername ? `https://github.com/${cleanUsername}` : '#', 
-        exists: !!scrapedData 
-      },
-      { platform: 'Twitter', username: 'Check manually', url: '#', exists: false },
+      ...(scrapedData?.connected_accounts || []).map((acc: any) => ({
+        platform: acc.platform,
+        username: acc.username || 'Found',
+        url: acc.url,
+        exists: true
+      })),
+      // If no scraped data but we intended to check GitHub
+      ...(!scrapedData && cleanUsername ? [{
+          platform: 'GitHub',
+          username: cleanUsername,
+          url: `https://github.com/${cleanUsername}`,
+          exists: false
+      }] : [])
     ],
     breaches: breaches as any,
     flags: flags as any,

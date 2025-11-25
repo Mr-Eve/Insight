@@ -1,11 +1,20 @@
 from http.server import BaseHTTPRequestHandler
 import json
+import asyncio
 import httpx
 from parsel import Selector
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, urljoin
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(self.handle_async())
+        finally:
+            loop.close()
+
+    async def handle_async(self):
         # Parse query parameters
         query_components = parse_qs(urlparse(self.path).query)
         username = query_components.get('username', [None])[0]
@@ -16,50 +25,142 @@ class handler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"error": "Username required"}).encode('utf-8'))
             return
 
-        # Target URL (Scraping GitHub as a demo since it's public and scrape-friendly-ish)
-        url = f"https://github.com/{username}"
-        
+        # Results container
+        results = {
+            "source": "Aggregated Scrape",
+            "username": username,
+            "connected_accounts": [],
+            "fullName": "",
+            "bio": "",
+            "location": "",
+            "company": "",
+            "avatar": "",
+            "website": ""
+        }
+
+        # Stealth headers to mimic a real browser
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "DNT": "1",
+            "Upgrade-Insecure-Requests": "1"
+        }
+
+        async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=25.0) as client:
+            try:
+                # 1. Scrape GitHub Profile
+                github_url = f"https://github.com/{username}"
+                resp = await client.get(github_url)
+                
+                if resp.status_code == 404:
+                    self.send_response(404)
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": "Profile not found"}).encode('utf-8'))
+                    return
+
+                if resp.status_code == 200:
+                    sel = Selector(text=resp.text)
+                    
+                    # Extract Profile Data
+                    results["fullName"] = sel.css('span.p-name::text').get(default="").strip()
+                    results["bio"] = sel.css('div.p-note::text').get(default="").strip()
+                    results["location"] = sel.css('li[itemprop="homeLocation"] span::text').get(default="").strip()
+                    results["company"] = sel.css('li[itemprop="worksFor"] span::text').get(default="").strip()
+                    results["avatar"] = sel.css('img.avatar::attr(src)').get(default="")
+                    results["url"] = github_url
+
+                    # Add GitHub to accounts
+                    results["connected_accounts"].append({
+                        "platform": "GitHub",
+                        "username": username,
+                        "url": github_url,
+                        "exists": True
+                    })
+
+                    # 2. Find Linked Accounts on GitHub
+                    # Check pinned items, sidebar links, and bio
+                    vcard_links = sel.css('ul.vcard-details li a::attr(href)').getall()
+                    
+                    website_url = None
+                    
+                    for link in vcard_links:
+                        # Identify platform
+                        platform = self.detect_platform(link)
+                        if platform:
+                            results["connected_accounts"].append({
+                                "platform": platform,
+                                "url": link,
+                                "username": self.extract_username(link),
+                                "exists": True
+                            })
+                        elif not link.startswith('mailto:') and not 'github.com' in link:
+                            # Likely a personal website
+                            website_url = link
+
+                    if website_url:
+                        results["website"] = website_url
+                        results["connected_accounts"].append({
+                            "platform": "Website",
+                            "url": website_url,
+                            "username": urlparse(website_url).netloc,
+                            "exists": True
+                        })
+
+                        # 3. Deep Scrape: Check the personal website for social links
+                        await self.scrape_website_socials(client, website_url, results)
+
+            except Exception as e:
+                results["error"] = str(e)
+
+        # Deduplicate accounts
+        seen = set()
+        unique_accounts = []
+        for acc in results["connected_accounts"]:
+            key = (acc.get('platform'), acc.get('url'))
+            if key not in seen:
+                seen.add(key)
+                unique_accounts.append(acc)
+        results["connected_accounts"] = unique_accounts
+
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps(results).encode('utf-8'))
+
+    def detect_platform(self, url):
+        domain = urlparse(url).netloc.lower()
+        if 'twitter.com' in domain or 'x.com' in domain: return 'Twitter'
+        if 'linkedin.com' in domain: return 'LinkedIn'
+        if 'instagram.com' in domain: return 'Instagram'
+        if 'facebook.com' in domain: return 'Facebook'
+        if 'youtube.com' in domain: return 'YouTube'
+        if 'medium.com' in domain: return 'Medium'
+        if 'dev.to' in domain: return 'Dev.to'
+        if 'twitch.tv' in domain: return 'Twitch'
+        if 'discord.gg' in domain: return 'Discord'
+        return None
+
+    def extract_username(self, url):
+        # Simple heuristic
+        path = urlparse(url).path
+        return path.strip('/').split('/')[-1]
+
+    async def scrape_website_socials(self, client, url, results):
         try:
-            # 1. Fetch the page (Scrapy 'Request')
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-            }
-            response = httpx.get(url, headers=headers, timeout=10.0)
-            
-            if response.status_code == 404:
-                self.send_response(404)
-                self.end_headers()
-                self.wfile.write(json.dumps({"error": "Profile not found"}).encode('utf-8'))
-                return
-
-            # 2. Extract data (Scrapy 'Selector')
-            sel = Selector(text=response.text)
-            
-            # Extracting fields using CSS selectors (standard Scrapy syntax)
-            full_name = sel.css('span.p-name::text').get(default="").strip()
-            bio = sel.css('div.p-note::text').get(default="").strip()
-            location = sel.css('li[itemprop="homeLocation"] span::text').get(default="").strip()
-            company = sel.css('li[itemprop="worksFor"] span::text').get(default="").strip()
-            avatar = sel.css('img.avatar::attr(src)').get(default="")
-
-            data = {
-                "source": "GitHub Scrape",
-                "username": username,
-                "url": url,
-                "fullName": full_name,
-                "bio": bio,
-                "location": location,
-                "company": company,
-                "avatar": avatar
-            }
-
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps(data).encode('utf-8'))
-
-        except Exception as e:
-            self.send_response(500)
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
-
+            resp = await client.get(url, timeout=10.0)
+            if resp.status_code == 200:
+                sel = Selector(text=resp.text)
+                links = sel.css('a::attr(href)').getall()
+                for link in links:
+                    full_link = urljoin(url, link)
+                    platform = self.detect_platform(full_link)
+                    if platform:
+                        results["connected_accounts"].append({
+                            "platform": platform,
+                            "url": full_link,
+                            "username": self.extract_username(full_link),
+                            "exists": True
+                        })
+        except:
+            pass
