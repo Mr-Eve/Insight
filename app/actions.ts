@@ -152,7 +152,7 @@ export async function performBackgroundCheck(prevState: ActionState, formData: F
               email: member.user.email,
               id: member.user.id,
               joinedAt: member.joined_at,
-              avatar: member.user.profile_pic_url || null
+              avatar: (member.user as any).profile_pic_url || null
             };
             
             // Propagate found data to other checks
