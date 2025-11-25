@@ -48,7 +48,7 @@ class handler(BaseHTTPRequestHandler):
             "Upgrade-Insecure-Requests": "1"
         }
 
-        async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=30.0) as client:
+        async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=35.0) as client:
             try:
                 # Run platform checks in parallel
                 tasks = [
@@ -76,8 +76,9 @@ class handler(BaseHTTPRequestHandler):
                 unique_accounts.append(acc)
         results["connected_accounts"] = unique_accounts
         
-        # REMOVED: Automatic fallback to username if no name found. 
-        # We want to be honest if we didn't find a name.
+        # If no full name found but we have accounts, try to use username
+        if not results["fullName"] and results["connected_accounts"]:
+            results["fullName"] = username
 
         self.send_response(200)
         self.send_header('Content-type', 'application/json')
@@ -158,61 +159,95 @@ class handler(BaseHTTPRequestHandler):
                      })
 
     async def check_twitter(self, client, username, results):
-        # Use Syndication Endpoint (Official Twitter embed API)
-        # This is much more reliable for getting user metadata
+        # 1. Try Syndication API (Official)
         try:
             url = f"https://syndication.twitter.com/srv/timeline-profile/screen-name/{username}"
-            resp = await client.get(url, timeout=8.0)
+            resp = await client.get(url, timeout=6.0)
             
             if resp.status_code == 200:
                 data = resp.json()
-                
-                # Extract info safely
                 user_info = data.get('user', {})
-                if not user_info:
-                    # Sometimes data structure varies
+                
+                if user_info:
+                    results["connected_accounts"].append({
+                        "platform": "Twitter",
+                        "username": user_info.get('screen_name') or username,
+                        "url": f"https://twitter.com/{username}",
+                        "exists": True
+                    })
+
+                    if not results["fullName"]:
+                        results["fullName"] = user_info.get('name', '')
+                    if not results["bio"]:
+                        results["bio"] = user_info.get('description', '')
+                    if not results["avatar"]:
+                        results["avatar"] = user_info.get('profile_image_url_https', '').replace('_normal', '')
+                    if not results["location"]:
+                        results["location"] = user_info.get('location', '')
                     return
-
-                results["connected_accounts"].append({
-                    "platform": "Twitter",
-                    "username": user_info.get('screen_name') or username,
-                    "url": f"https://twitter.com/{username}",
-                    "exists": True
-                })
-
-                # Enrich profile if missing
-                if not results["fullName"]:
-                    results["fullName"] = user_info.get('name', '')
-                if not results["bio"]:
-                    results["bio"] = user_info.get('description', '')
-                if not results["avatar"]:
-                    results["avatar"] = user_info.get('profile_image_url_https', '').replace('_normal', '')
-                if not results["location"]:
-                    results["location"] = user_info.get('location', '')
-
         except Exception:
-            # Fallback to simple check if syndication fails?
             pass
+
+        # 2. Fallback to Nitter (Public Frontend)
+        nitter_instances = [
+            "https://nitter.privacydev.net",
+            "https://nitter.poast.org",
+            "https://nitter.cz"
+        ]
+        
+        for base in nitter_instances:
+            try:
+                url = f"{base}/{username}"
+                resp = await client.get(url, timeout=5.0)
+                if resp.status_code == 200 and "Profile not found" not in resp.text:
+                    results["connected_accounts"].append({
+                        "platform": "Twitter",
+                        "username": username,
+                        "url": f"https://twitter.com/{username}",
+                        "exists": True
+                    })
+                    
+                    if not results["fullName"]:
+                        sel = Selector(text=resp.text)
+                        results["fullName"] = sel.css('.profile-card-fullname::text').get(default="").strip()
+                        results["avatar"] = sel.css('.profile-card-avatar::attr(src)').get(default="")
+                        if results["avatar"] and results["avatar"].startswith('/'):
+                            results["avatar"] = base + results["avatar"]
+                    return
+            except:
+                continue
 
     async def check_instagram(self, client, username, results):
-        try:
-            url = f"https://www.picuki.com/profile/{username}"
-            resp = await client.get(url, timeout=8.0)
-            if resp.status_code == 200 and "Profile not found" not in resp.text:
-                results["connected_accounts"].append({
-                    "platform": "Instagram",
-                    "username": username,
-                    "url": f"https://instagram.com/{username}",
-                    "exists": True
-                })
-                
-                if not results["fullName"]:
-                     sel = Selector(text=resp.text)
-                     results["fullName"] = sel.css('.profile-name::text').get(default="").strip()
-                     avatar = sel.css('.profile-avatar img::attr(src)').get()
-                     if avatar: results["avatar"] = avatar
-        except:
-            pass
+        viewers = [
+            f"https://www.picuki.com/profile/{username}",
+            f"https://imginn.com/{username}/"
+        ]
+        
+        for url in viewers:
+            try:
+                resp = await client.get(url, timeout=8.0)
+                if resp.status_code == 200 and "Profile not found" not in resp.text and "Page Not Found" not in resp.text:
+                    results["connected_accounts"].append({
+                        "platform": "Instagram",
+                        "username": username,
+                        "url": f"https://instagram.com/{username}",
+                        "exists": True
+                    })
+                    
+                    if not results["fullName"]:
+                         sel = Selector(text=resp.text)
+                         # Selectors differ by site
+                         if 'picuki' in url:
+                             results["fullName"] = sel.css('.profile-name::text').get(default="").strip()
+                             avatar = sel.css('.profile-avatar img::attr(src)').get()
+                             if avatar: results["avatar"] = avatar
+                         elif 'imginn' in url:
+                             results["fullName"] = sel.css('h1::text').get(default="").strip()
+                             avatar = sel.css('img.avatar::attr(src)').get()
+                             if avatar: results["avatar"] = avatar
+                    return
+            except:
+                continue
 
     def detect_platform(self, url):
         domain = urlparse(url).netloc.lower()
