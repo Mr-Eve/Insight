@@ -62,11 +62,12 @@ class handler(BaseHTTPRequestHandler):
                 if resp.status_code == 200:
                     sel = Selector(text=resp.text)
                     
-                    # Extract Profile Data
-                    results["fullName"] = sel.css('span.p-name::text').get(default="").strip()
-                    results["bio"] = sel.css('div.p-note::text').get(default="").strip()
-                    results["location"] = sel.css('li[itemprop="homeLocation"] span::text').get(default="").strip()
-                    results["company"] = sel.css('li[itemprop="worksFor"] span::text').get(default="").strip()
+                    # Extract Basic Profile Data
+                    # Try standard classes and microformats
+                    results["fullName"] = sel.css('span.p-name::text, h1.vcard-names span::text').get(default="").strip()
+                    results["bio"] = sel.css('div.p-note::text, div.user-profile-bio::text').get(default="").strip()
+                    results["location"] = sel.css('li[itemprop="homeLocation"] span::text, .p-label::text').get(default="").strip()
+                    results["company"] = sel.css('li[itemprop="worksFor"] span::text, .p-org::text').get(default="").strip()
                     results["avatar"] = sel.css('img.avatar::attr(src)').get(default="")
                     results["url"] = github_url
 
@@ -79,12 +80,26 @@ class handler(BaseHTTPRequestHandler):
                     })
 
                     # 2. Find Linked Accounts on GitHub
-                    # Check pinned items, sidebar links, and bio
-                    vcard_links = sel.css('ul.vcard-details li a::attr(href)').getall()
+                    # Strategy: Scrape ALL links in the profile container (.h-card)
+                    # This covers bio, sidebar, pinned items, etc.
+                    # Exclude internal GitHub links (repositories, stars, followers)
+                    
+                    profile_links = sel.css('.h-card a::attr(href)').getall()
+                    # Fallback if .h-card isn't found (older layout)
+                    if not profile_links:
+                        profile_links = sel.css('.js-profile-editable-area a::attr(href)').getall()
                     
                     website_url = None
                     
-                    for link in vcard_links:
+                    for link in profile_links:
+                        # Normalize
+                        if not link.startswith('http'): continue
+                        
+                        # Skip internal GitHub links unless they are explicitly external (redirects)
+                        if 'github.com' in link and username not in link: 
+                             # Keep going, might be a link to another repo, usually not a social profile
+                             pass
+                        
                         # Identify platform
                         platform = self.detect_platform(link)
                         if platform:
@@ -94,9 +109,11 @@ class handler(BaseHTTPRequestHandler):
                                 "username": self.extract_username(link),
                                 "exists": True
                             })
-                        elif not link.startswith('mailto:') and not 'github.com' in link:
+                        elif 'github.com' not in link and not link.startswith('mailto:'):
                             # Likely a personal website
-                            website_url = link
+                            # Avoid some common false positives
+                            if 'opensource.org' not in link and 'shields.io' not in link:
+                                website_url = link
 
                     if website_url:
                         results["website"] = website_url
@@ -117,9 +134,10 @@ class handler(BaseHTTPRequestHandler):
         seen = set()
         unique_accounts = []
         for acc in results["connected_accounts"]:
-            key = (acc.get('platform'), acc.get('url'))
-            if key not in seen:
-                seen.add(key)
+            # Key by platform and normalized URL
+            k = (acc.get('platform'), acc.get('url').rstrip('/'))
+            if k not in seen:
+                seen.add(k)
                 unique_accounts.append(acc)
         results["connected_accounts"] = unique_accounts
 
@@ -139,6 +157,7 @@ class handler(BaseHTTPRequestHandler):
         if 'dev.to' in domain: return 'Dev.to'
         if 'twitch.tv' in domain: return 'Twitch'
         if 'discord.gg' in domain: return 'Discord'
+        if 'bsky.app' in domain: return 'Bluesky'
         return None
 
     def extract_username(self, url):

@@ -187,8 +187,9 @@ export function BackgroundCheckForm({ companyId }: { companyId: string }) {
                       {profile.platform === 'LinkedIn' && <Linkedin className="w-5 h-5 text-blue-700" />}
                       {profile.platform === 'GitHub' && <Github className="w-5 h-5 text-zinc-800 dark:text-white" />}
                       {profile.platform === 'Instagram' && <Instagram className="w-5 h-5 text-pink-600" />}
-                      {profile.platform === 'Whop' && <div className="w-5 h-5 rounded-full bg-orange-500 flex items-center justify-center text-white text-[10px] font-bold">W</div>}
-                      <div className="flex flex-col">
+                  {profile.platform === 'Whop' && <div className="w-5 h-5 rounded-full bg-orange-500 flex items-center justify-center text-white text-[10px] font-bold">W</div>}
+                  {profile.platform === 'Website' && <Globe className="w-5 h-5 text-zinc-500" />}
+                  <div className="flex flex-col">
                         <span className="font-medium text-sm">{profile.platform}</span>
                         <span className="text-xs text-zinc-500">{profile.exists ? profile.username : 'Not Found'}</span>
                       </div>
