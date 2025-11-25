@@ -15,7 +15,8 @@ import {
   Linkedin, 
   Github, 
   Instagram,
-  ExternalLink
+  ExternalLink,
+  Filter
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -32,22 +33,37 @@ export function BackgroundCheckForm({ companyId }: { companyId: string }) {
     <div className="w-full space-y-8">
       <form action={formAction} className="w-full max-w-3xl mx-auto">
         <input type="hidden" name="companyId" value={companyId} />
-        <div className="flex gap-3">
+        <div className="flex flex-col sm:flex-row gap-3">
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 h-5 w-5" />
             <input
               name="query"
               type="text"
-              placeholder="Enter Email, Username, or Phone (e.g. alex@example.com)"
+              placeholder="Enter ID, Username, or Email"
               required
               className="w-full pl-10 pr-4 py-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm text-lg"
             />
           </div>
+          
+          <div className="relative w-full sm:w-48">
+            <Filter className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 h-4 w-4" />
+            <select 
+              name="platform" 
+              className="w-full pl-9 pr-4 py-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 focus:ring-2 focus:ring-blue-500 outline-none transition-all shadow-sm text-base appearance-none"
+              defaultValue="auto"
+            >
+              <option value="auto">Auto-Detect</option>
+              <option value="whop">Whop User</option>
+              <option value="github">GitHub</option>
+              <option value="email">Email Only</option>
+            </select>
+          </div>
+
           <button
             type="submit"
             disabled={isPending}
             className={twMerge(
-              "px-8 py-4 rounded-xl bg-blue-600 text-white font-medium transition-all flex items-center gap-2 shadow-md hover:shadow-lg hover:-translate-y-0.5",
+              "px-8 py-4 rounded-xl bg-blue-600 text-white font-medium transition-all flex items-center gap-2 shadow-md hover:shadow-lg hover:-translate-y-0.5 justify-center sm:justify-start",
               isPending && "opacity-70 cursor-not-allowed hover:transform-none hover:shadow-md",
               "hover:bg-blue-700"
             )}
@@ -63,7 +79,7 @@ export function BackgroundCheckForm({ companyId }: { companyId: string }) {
           </button>
         </div>
         <p className="text-zinc-500 text-sm mt-3 ml-1">
-          Supports: Email addresses, Usernames, Phone numbers
+          Supports: Whop User IDs, Emails, Usernames
         </p>
       </form>
 
@@ -170,6 +186,7 @@ export function BackgroundCheckForm({ companyId }: { companyId: string }) {
                       {profile.platform === 'LinkedIn' && <Linkedin className="w-5 h-5 text-blue-700" />}
                       {profile.platform === 'GitHub' && <Github className="w-5 h-5 text-zinc-800 dark:text-white" />}
                       {profile.platform === 'Instagram' && <Instagram className="w-5 h-5 text-pink-600" />}
+                      {profile.platform === 'Whop' && <div className="w-5 h-5 rounded-full bg-orange-500 flex items-center justify-center text-white text-[10px] font-bold">W</div>}
                       <div className="flex flex-col">
                         <span className="font-medium text-sm">{profile.platform}</span>
                         <span className="text-xs text-zinc-500">{profile.exists ? profile.username : 'Not Found'}</span>

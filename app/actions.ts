@@ -112,83 +112,115 @@ async function scrapeProfile(username: string) {
 export async function performBackgroundCheck(prevState: ActionState, formData: FormData): Promise<ActionState> {
   const query = formData.get('query') as string;
   const companyId = formData.get('companyId') as string;
+  const platform = formData.get('platform') as string; // 'auto', 'whop', 'github', 'email'
 
   if (!query) {
     return { error: 'Please enter a Whop ID, Username, or Email', data: null };
   }
 
-  let targetEmail = query;
-  let targetUsername = query;
+  let targetEmail = '';
+  let targetUsername = '';
   let whopIdentity = null;
 
-  // 1. Try to lookup Whop User if companyId is present
-  if (companyId) {
-    try {
-      console.log(`Looking up Whop user: ${query} in company ${companyId}`);
-      
-      // Check if query is a user ID
-      const isUserId = query.startsWith('user_');
-      
-      // List members matching query
-      const members = await whopsdk.members.list({
-        company_id: companyId,
-        query: isUserId ? undefined : query,
-        user_ids: isUserId ? [query] : undefined,
-        first: 1
-      });
+  // === Strategy Selection based on Platform ===
 
-      if (members.data && members.data.length > 0) {
-        const member = members.data[0];
-        if (member.user) {
-          whopIdentity = {
-            fullName: member.user.name,
-            username: member.user.username,
-            email: member.user.email,
-            id: member.user.id,
-            joinedAt: member.joined_at
-          };
-          
-          // Update targets for further checks
-          if (member.user.email) targetEmail = member.user.email;
-          if (member.user.username) targetUsername = member.user.username;
-          
-          console.log('Found Whop User:', whopIdentity);
+  if (platform === 'whop' || platform === 'auto') {
+    // 1. Try to lookup Whop User
+    if (companyId) {
+      try {
+        console.log(`Looking up Whop user: ${query} in company ${companyId}`);
+        
+        // Check if query is a user ID
+        const isUserId = query.startsWith('user_');
+        
+        // List members matching query
+        const members = await whopsdk.members.list({
+          company_id: companyId,
+          query: isUserId ? undefined : query,
+          user_ids: isUserId ? [query] : undefined,
+          first: 1
+        });
+
+        if (members.data && members.data.length > 0) {
+          const member = members.data[0];
+          if (member.user) {
+            whopIdentity = {
+              fullName: member.user.name,
+              username: member.user.username,
+              email: member.user.email,
+              id: member.user.id,
+              joinedAt: member.joined_at
+            };
+            
+            // Propagate found data to other checks
+            if (member.user.email) targetEmail = member.user.email;
+            if (member.user.username) targetUsername = member.user.username;
+            
+            console.log('Found Whop User:', whopIdentity);
+          }
         }
+      } catch (err) {
+        console.error('Whop API Lookup Failed:', err);
       }
-    } catch (err) {
-      console.error('Whop API Lookup Failed:', err);
-      // Continue with original query if lookup fails
     }
   }
 
+  // If user explicitly selected GitHub or Email, use query directly if Whop lookup failed or wasn't run
+  if (!targetUsername && (platform === 'github' || platform === 'auto')) {
+    // If it looks like a username (no @), treat as username
+    if (!query.includes('@')) targetUsername = query;
+  }
+
+  if (!targetEmail && (platform === 'email' || platform === 'auto')) {
+    // If it looks like an email, treat as email
+    if (query.includes('@')) targetEmail = query;
+  }
+
+
+  // === Execution ===
+
   // 2. Check HIBP (API Check) using Email
-  // Only run if we have an email-like string
   let breaches = null;
-  if (targetEmail.includes('@')) {
+  if (targetEmail && targetEmail.includes('@')) {
     breaches = await checkHaveIBeenPwned(targetEmail);
   }
   
   const usedRealApi = breaches !== null;
 
   // 3. Try to scrape GitHub profile (Scrapy/Python Check) using Username
-  // Ensure username doesn't have @ (e.g. if we failed to find Whop user and query was email)
+  // Only scrape if we have a valid username and the platform allows it (not 'email' mode)
   const cleanUsername = targetUsername.includes('@') ? targetUsername.split('@')[0] : targetUsername;
-  const scrapedData = await scrapeProfile(cleanUsername);
+  let scrapedData = null;
+  
+  if (cleanUsername && platform !== 'email') {
+     scrapedData = await scrapeProfile(cleanUsername);
+  }
 
-  // Mock data fallback logic
+  // Mock data fallback logic (Only if we found NOTHING at all)
+  const foundAnyRealData = whopIdentity || scrapedData || usedRealApi;
   const isRiskyMock = query.length % 2 !== 0; 
   
-  if (breaches === null) {
+  if (!foundAnyRealData && breaches === null) {
+    // Only use mock breaches if we literally found nothing real
     breaches = isRiskyMock ? [
       { name: 'Collection #1', date: '2019-01-07', description: 'Email and password exposed in massive data dump.' },
       { name: 'Verifications.io', date: '2019-02-25', description: 'Personal info exposed in marketing database.' },
     ] : [];
+  } else if (breaches === null) {
+    // If we found real identity data but HIBP failed/was skipped, assume 0 breaches for the report
+    breaches = [];
   }
 
   // Calculate risk score
-  const riskScore = usedRealApi 
-    ? Math.min(10 + (breaches.length * 15), 99) 
-    : (isRiskyMock ? 85 : 12);
+  // Base score 10. +15 per breach.
+  // If verified Whop user, -20 risk.
+  let riskScore = Math.min(10 + (breaches.length * 15), 99);
+  if (whopIdentity) riskScore = Math.max(0, riskScore - 20);
+  
+  if (!foundAnyRealData && !usedRealApi) {
+      // Fallback mock score
+      riskScore = isRiskyMock ? 85 : 12;
+  }
 
   const flags = [];
   if (breaches.length > 0) {
@@ -208,7 +240,7 @@ export async function performBackgroundCheck(prevState: ActionState, formData: F
   // Consolidate Identity Data
   // Priority: Scraped Data -> Whop Data -> Fallback/Mock
   const identity = {
-    fullName: scrapedData?.fullName || whopIdentity?.fullName || 'Alex J. Doe',
+    fullName: scrapedData?.fullName || whopIdentity?.fullName || (foundAnyRealData ? cleanUsername : 'Alex J. Doe'),
     ageRange: 'Unknown',
     location: scrapedData?.location || 'Unknown',
     jobTitle: scrapedData?.company || 'Unknown',
