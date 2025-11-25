@@ -6,6 +6,7 @@ const nextConfig: NextConfig = {
       allowedOrigins: [
         "localhost:3000", 
         "*.whop.com", 
+        "*.apps.whop.com",
         "*.vercel.app",
         "whop.com"
       ],
