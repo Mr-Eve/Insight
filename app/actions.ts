@@ -122,6 +122,7 @@ export async function performBackgroundCheck(prevState: ActionState, formData: F
   let targetEmail = '';
   let targetUsername = '';
   let whopIdentity = null;
+  let whopError = null;
 
   // === Strategy Selection based on Platform ===
 
@@ -160,8 +161,11 @@ export async function performBackgroundCheck(prevState: ActionState, formData: F
             console.log('Found Whop User:', whopIdentity);
           }
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error('Whop API Lookup Failed:', err);
+        if (err?.status === 403 || (err.error && err.error.status === 403)) {
+             whopError = "Whop API Permission Error: Please enable 'member:basic:read' scope in your Whop App Settings.";
+        }
       }
     }
   }
@@ -197,10 +201,22 @@ export async function performBackgroundCheck(prevState: ActionState, formData: F
      scrapedData = await scrapeProfile(cleanUsername);
   }
 
-  const foundAnyRealData = whopIdentity || scrapedData || usedRealApi;
+  // Validation: Did we actually find anything?
+  // We consider it a "hit" if:
+  // 1. Whop found a user
+  // 2. HIBP returned a valid response (even empty list is a valid 'clean' response)
+  // 3. Scraper found connected accounts OR a Full Name (not just an empty shell)
+  
+  const validScrape = scrapedData && (
+      (scrapedData.connected_accounts && scrapedData.connected_accounts.length > 0) || 
+      (scrapedData.fullName && scrapedData.fullName.length > 0)
+  );
+  
+  const foundAnyRealData = whopIdentity || validScrape || usedRealApi;
   
   if (!foundAnyRealData) {
-    return { error: `No results found for "${query}"`, data: null, query };
+    const errorMessage = whopError ? whopError : `No results found for "${query}"`;
+    return { error: errorMessage, data: null, query };
   }
 
   // If we found real identity data but HIBP failed/was skipped, assume 0 breaches for the report
@@ -228,9 +244,13 @@ export async function performBackgroundCheck(prevState: ActionState, formData: F
   if (whopIdentity) {
     flags.push({ severity: 'low', type: 'Whop Verified', description: `Confirmed member of your company (Joined: ${new Date(whopIdentity.joinedAt).toLocaleDateString()}).` });
   }
+  
+  if (whopError) {
+       flags.push({ severity: 'medium', type: 'Integration Warning', description: whopError });
+  }
 
   // Consolidate Identity Data
-  // Priority: Scraped Data -> Whop Data -> Fallback/Mock
+  // Priority: Scraped Data -> Whop Data -> Fallback (only if foundAnyRealData is true)
   const identity = {
     fullName: scrapedData?.fullName || whopIdentity?.fullName || cleanUsername || query,
     ageRange: 'Unknown',
@@ -259,8 +279,9 @@ export async function performBackgroundCheck(prevState: ActionState, formData: F
         url: acc.url,
         exists: true
       })),
-      // If no scraped data but we intended to check GitHub
-      ...(!scrapedData && cleanUsername ? [{
+      // Only add GitHub manual fallback if we didn't find it in connected_accounts but scanned for it
+      // AND we found *some* data elsewhere (otherwise we would have returned error above)
+      ...(!scrapedData?.connected_accounts?.find((a:any) => a.platform === 'GitHub') && cleanUsername && validScrape ? [{
           platform: 'GitHub',
           username: cleanUsername,
           url: `https://github.com/${cleanUsername}`,

@@ -60,7 +60,6 @@ class handler(BaseHTTPRequestHandler):
                 await asyncio.gather(*tasks)
                 
                 # If we found a website from GitHub or elsewhere, deep scrape it
-                # (The check_github function populates results['website'] if found)
                 if results.get("website"):
                     await self.scrape_website_socials(client, results["website"], results)
 
@@ -77,9 +76,8 @@ class handler(BaseHTTPRequestHandler):
                 unique_accounts.append(acc)
         results["connected_accounts"] = unique_accounts
         
-        # If no full name found but we have accounts, try to use username
-        if not results["fullName"] and results["connected_accounts"]:
-            results["fullName"] = username
+        # REMOVED: Automatic fallback to username if no name found. 
+        # We want to be honest if we didn't find a name.
 
         self.send_response(200)
         self.send_header('Content-type', 'application/json')
@@ -94,7 +92,7 @@ class handler(BaseHTTPRequestHandler):
             if resp.status_code == 200:
                 sel = Selector(text=resp.text)
                 
-                # Populate primary identity from GitHub if available (it's usually the richest source)
+                # Populate primary identity from GitHub if available
                 if not results["fullName"]:
                     results["fullName"] = sel.css('span.p-name::text, h1.vcard-names span::text').get(default="").strip()
                     results["bio"] = sel.css('div.p-note::text, div.user-profile-bio::text').get(default="").strip()
@@ -125,6 +123,7 @@ class handler(BaseHTTPRequestHandler):
             if not link.startswith('http'): continue
             if 'avatars.githubusercontent.com' in link: continue
             if 'github.com' in link and username not in link: continue
+            if 'assets' in link: continue
             
             platform = self.detect_platform(link)
             if platform:
@@ -150,7 +149,6 @@ class handler(BaseHTTPRequestHandler):
              twitter_match = re.search(r'(?:twitter\.com|x\.com)/([a-zA-Z0-9_]+)|@([a-zA-Z0-9_]+)', bio_text)
              if twitter_match:
                  handle = twitter_match.group(1) or twitter_match.group(2)
-                 # Verify it's not just a random word starting with @
                  if handle and len(handle) > 3:
                      results["connected_accounts"].append({
                          "platform": "Twitter",
@@ -160,40 +158,43 @@ class handler(BaseHTTPRequestHandler):
                      })
 
     async def check_twitter(self, client, username, results):
-        # Twitter is hard to scrape directly. We use Nitter or just verify existence.
-        # Try Nitter first (public viewer)
-        nitter_instances = [
-            "https://nitter.net", 
-            "https://nitter.cz",
-            "https://nitter.privacydev.net"
-        ]
-        
-        for base in nitter_instances:
-            try:
-                url = f"{base}/{username}"
-                resp = await client.get(url, timeout=5.0)
-                if resp.status_code == 200 and "Profile not found" not in resp.text:
-                    # Found it!
-                    results["connected_accounts"].append({
-                        "platform": "Twitter",
-                        "username": username,
-                        "url": f"https://twitter.com/{username}",
-                        "exists": True
-                    })
-                    
-                    # Try to extract avatar/name from Nitter if we don't have it
-                    if not results["fullName"]:
-                        sel = Selector(text=resp.text)
-                        results["fullName"] = sel.css('.profile-card-fullname::text').get(default="").strip()
-                        results["avatar"] = sel.css('.profile-card-avatar::attr(src)').get(default="")
-                        if results["avatar"] and results["avatar"].startswith('/'):
-                            results["avatar"] = base + results["avatar"]
+        # Use Syndication Endpoint (Official Twitter embed API)
+        # This is much more reliable for getting user metadata
+        try:
+            url = f"https://syndication.twitter.com/srv/timeline-profile/screen-name/{username}"
+            resp = await client.get(url, timeout=8.0)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                
+                # Extract info safely
+                user_info = data.get('user', {})
+                if not user_info:
+                    # Sometimes data structure varies
                     return
-            except:
-                continue
+
+                results["connected_accounts"].append({
+                    "platform": "Twitter",
+                    "username": user_info.get('screen_name') or username,
+                    "url": f"https://twitter.com/{username}",
+                    "exists": True
+                })
+
+                # Enrich profile if missing
+                if not results["fullName"]:
+                    results["fullName"] = user_info.get('name', '')
+                if not results["bio"]:
+                    results["bio"] = user_info.get('description', '')
+                if not results["avatar"]:
+                    results["avatar"] = user_info.get('profile_image_url_https', '').replace('_normal', '')
+                if not results["location"]:
+                    results["location"] = user_info.get('location', '')
+
+        except Exception:
+            # Fallback to simple check if syndication fails?
+            pass
 
     async def check_instagram(self, client, username, results):
-        # Use a viewer like Picuki
         try:
             url = f"https://www.picuki.com/profile/{username}"
             resp = await client.get(url, timeout=8.0)
@@ -210,7 +211,6 @@ class handler(BaseHTTPRequestHandler):
                      results["fullName"] = sel.css('.profile-name::text').get(default="").strip()
                      avatar = sel.css('.profile-avatar img::attr(src)').get()
                      if avatar: results["avatar"] = avatar
-
         except:
             pass
 
@@ -239,6 +239,7 @@ class handler(BaseHTTPRequestHandler):
                 sel = Selector(text=resp.text)
                 links = sel.css('a::attr(href)').getall()
                 for link in links:
+                    if not link: continue
                     full_link = urljoin(url, link)
                     
                     if any(x in full_link.lower() for x in ['.jpg', '.png', '.svg', '.css', '.js']): continue
